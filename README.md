@@ -1,62 +1,96 @@
-# PUB Web (legacy)
+# PUB website (legacy)
 
-Website **lama** PUB (Pemberdayaan Umat Berkelanjutan, Universitas Nasional PASIM Bandung), live di <https://pubpasim.org>. Dibuat oleh kakak tingkat dengan Laravel, lalu dinaikkan versinya dan dibungkus Docker. Website baru ada di repo `pub-web` (<https://new.pubpasim.org>); repo ini diperlakukan sebagai referensi dan sumber migrasi, jadi ubah seperlunya saja (perbaikan keamanan atau bug kritis).
+The original website of **PUB (Pemberdayaan Umat Berkelanjutan)**, the free-tuition and dormitory scholarship at Universitas Nasional PASIM Bandung, built by earlier PUB students. Live at **https://pubpasim.org**.
 
-> Catatan: `origin/main` lebih baru dari banyak checkout lokal (Laravel 13, PHP 8.5, `Dockerfile`, tes). Jalankan `git pull` sebelum bekerja.
+> [!NOTE]
+> This site is in maintenance mode. New development happens in the new website ([new.pubpasim.org](https://new.pubpasim.org)), which takes over these pages step by step. Change this repo only for security fixes, bug fixes, or content that has not moved yet.
 
-## Isi
+## What it does
 
-Situs publik (profil PUB, pembina, jadwal PPMB/TPA/survei/wawancara, struktur organisasi, dokumentasi, infaq bulanan, formulir online) dan area admin (login) untuk mengelola data:
+**Public pages**: PUB profile and profile video, pembina profile, legal documents (legalitas), PUB activities, board structures (PUB, PPMB, alumni association), PPMB schedules (school visits, TPA, survey, final interview) and their documentation, selection results, downloadable registration form, monthly infaq, learning material, alumni listing, and a question form.
 
-- mahasiswa dan alumni (profil, pendidikan, pengalaman, aktivitas, dokumen), angkatan, jurusan, sekolah, daerah;
-- seleksi: jadwal, hasil seleksi, peserta wawancara akhir, syarat dan ketentuan;
-- organisasi PUB dan PPMB, pelatihan, periode, status sosial dan status PUB;
-- infaq, dokumentasi, akun pengguna.
+**Admin area** (after login): data management for students and alumni, batches (angkatan), majors, schools, regions, periods, PUB/PPMB organisation, schedules, selection results, trainings, documentation, infaq, terms, and user accounts.
 
-Nama tabel dan kolom memakai bahasa Indonesia (`tb_mahasiswa`, `tb_angkatan`, dst.).
+Login levels: `admin`, `admin_pub`, `admin_ppmb`, `ikatan_alumni` (all land on the admin area) and `alumni` (only their own profile, education, experience, trainings, and activities).
 
 ## Stack
 
-- PHP 8.4+ (image produksi `php:8.5-fpm`), Laravel 13, Blade
-- Vite 8 + Tailwind CSS 3 untuk aset
-- Database: PostgreSQL (`pubpasim_old`, dimigrasi dari MariaDB); sesi dan antrean memakai driver `database`
-- Pest 4 untuk tes
-- Produksi: nginx + php-fpm + 12 queue worker di bawah supervisor, dalam satu container (`Dockerfile`, konfigurasi di `docker/`)
+- PHP 8.5 (composer requires `^8.4`), Laravel 13, Blade views
+- Vite + Tailwind CSS 3 for assets
+- Database: PostgreSQL in production (the image also ships the MySQL/MariaDB PDO driver)
+- Queue: Laravel database queue, worked by supervisor in the container
+- Tests: Pest 4
 
-## Menjalankan lokal
+## Project layout
 
-```bash
+```
+app/Http/Controllers/   one controller per module (mostly Indonesian names, e.g. mahasiswaController, jad_tpaController)
+app/Http/Middleware/    RequireLogin, RestrictAlumni (see "Access control")
+app/Models/             Eloquent models over the tb_* tables
+resources/views/        Blade views: user/ (public), admin/, alumni_admin/, ppmb/, layouts/, components/
+routes/web.php          all routes
+docker/                 nginx, php-fpm, php.ini, supervisor, and entrypoint for the production image
+tests/Feature/          access-control tests
+public/file, public/imgs  uploaded files (persistent volumes in production)
+```
+
+## Access control
+
+Both middlewares are appended to the `web` group in `bootstrap/app.php` and **fail closed**:
+
+- **`RequireLogin`** requires a logged-in session for every route. A new public page must be added to `PUBLIC_PATHS` in `app/Http/Middleware/RequireLogin.php`, or it will redirect to the login page.
+- **`RestrictAlumni`** limits the `alumni` level to the routes listed in `RULES` (`app/Http/Middleware/RestrictAlumni.php`), and only for their own records. A new alumni route must be added there with the ids it has to match.
+
+Other rules:
+
+- Delete actions use `Route::delete()` (the `<x-delete-button>` component). Never add a GET route that changes data; the tests check for this.
+- Login regenerates the session only after the password check passes.
+
+## Running locally
+
+Requirements: PHP 8.4+ with Composer, Node 24 with npm, and a database. The migrations in `database/migrations` do **not** build the current schema from scratch, so work against a restored copy of the database rather than `php artisan migrate`. Never point a local `.env` at production.
+
+```sh
 composer install
-cp .env.example .env      # isi DB_* dan APP_KEY
+npm ci
+cp .env.example .env
 php artisan key:generate
-npm ci && npm run dev     # atau npm run build
-php artisan serve
+# set DB_CONNECTION / DB_HOST / DB_PORT / DB_DATABASE / DB_USERNAME / DB_PASSWORD to your local copy
+composer dev          # php artisan serve + queue listener + Vite
 ```
 
-Catatan: tiga migrasi lama rusak jika dijalankan dari nol, dan `route:list` gagal karena ada controller yang hilang. Skema berasal dari dump produksi; jangan "memperbaikinya" tanpa memeriksa database produksi dulu.
+`php artisan route:list` currently fails because some routes point at controllers that no longer exist; this does not affect serving pages.
 
-## Tes
+## Tests
 
-Tes ada di `tests/Feature/` (`AccessControlTest`, `AlumniScopeTest`). Jalankan dengan PHP 8.5 setelah `cp .env.example .env`:
+The tests use an in-memory SQLite database and need no external services:
 
-```bash
-./vendor/bin/pest
+```sh
+cp .env.example .env && php artisan key:generate   # once
+vendor/bin/pest
 ```
 
-## Akses dan keamanan
+Without a local PHP, run them in a container from a throwaway copy:
 
-- `RequireLogin` melindungi seluruh grup `web` dan gagal tertutup. Halaman publik baru **wajib** ditambahkan ke `PUBLIC_PATHS` di `app/Http/Middleware/RequireLogin.php`.
-- `RestrictAlumni`: akun level `alumni` hanya boleh memakai rute `alumni_adminController` dan hanya untuk datanya sendiri. Rute alumni baru **wajib** didaftarkan di `RULES`.
-- Aksi yang mengubah data harus lewat POST/PUT/DELETE dengan CSRF (hapus memakai komponen `<x-delete-button>`). Jangan membuat rute GET yang mengubah state.
-- Masih terbuka: password di `tb_user` masih plaintext (rencana: perlebar kolom lalu rehash saat login), dan `db_pub.sql` di repo memuat data akun. Jangan menambah kredensial ke repo.
+```sh
+podman run --rm -v "$PWD":/src:ro docker.io/library/composer:2 sh -c \
+  'cp -a /src /tmp/app && cd /tmp/app && rm -rf vendor .env && composer install -q &&
+   cp .env.example .env && php artisan key:generate -q && vendor/bin/pest'
+```
 
-## Deploy
+## Deployment
 
-Push ke `main` otomatis di-deploy oleh Dokploy (build type **Dockerfile**, bukan Nixpacks) di VPS yang sama dengan website baru. Untuk menaikkan versi PHP atau nginx, ubah `ARG PHP_VERSION` / `NGINX_VERSION` di `Dockerfile` lalu push.
+Pushes to `main` are deployed automatically by Dokploy, which builds the `Dockerfile`:
 
-- Health check container: `/up`.
-- Container menolak start jika `APP_KEY` kosong.
-- Bind mount persisten: `/root/old-public/file` dan `/root/old-public/imgs` ke `/app/public/file` dan `/app/public/imgs`. Folder lain di `public/` (mis. `data_file`) tidak persisten.
-- `nixpacks.toml` hanya sisa konfigurasi lama.
+- Official `php:<PHP_VERSION>-fpm` image + nginx (nginx.org stable) + supervisor running nginx, php-fpm, and 12 queue workers.
+- To patch PHP or nginx, bump `ARG PHP_VERSION` / `ARG NGINX_VERSION` in the `Dockerfile` and push.
+- The container refuses to start without `APP_KEY`, and its health check calls Laravel's `/up` route.
+- `public/file` and `public/imgs` are mounted from the host. Anything else written under `public/` is lost on redeploy.
 
-Jangan menjalankan perintah ke database produksi tanpa izin dan backup.
+`nixpacks.toml` is a leftover from the earlier Nixpacks build and is not used by the current deployment.
+
+## Contributing
+
+- Keep credentials, `.env`, and database dumps out of git.
+- Run the tests before pushing, since a push goes straight to production.
+- Write new code, commit messages, and comments in English.
